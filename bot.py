@@ -19,7 +19,6 @@ bot = Bot(TOKEN, parse_mode=types.ParseMode.HTML)
 dp = Dispatcher(bot,storage=MemoryStorage())
 logging.basicConfig(level=logging.INFO)
 
-
 line = '➖➖➖➖➖➖➖➖➖➖➖➖'
 
 class NakrutkaState(StatesGroup):

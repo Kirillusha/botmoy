@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 #//////////////////////////////////////////// https://t.me/lolzteam_lolz \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 from aiogram import Bot, Dispatcher, executor, types

@@ -1,0 +1,499 @@
+#!/bin/bash
+# ============================================================
+# Установщик бота Playerok Universal (без systemd)
+# ============================================================
+set -e
+
+BOT_NAME="playerokuniversal"
+BOT_DIR="/root/playerokuniversal"
+BOT_FILE="bot.py"
+REPO="alleexxeeyy/playerok-universal"
+PYTHON="python3.12"
+CMD="pluniversal"
+PID_FILE="${BOT_DIR}/bot.pid"
+LOG_FILE="${BOT_DIR}/bot.log"
+
+# Цвета
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# Символы
+CHECK="${GREEN}✔${NC}"
+CROSS="${RED}✘${NC}"
+ARROW="${CYAN}›${NC}"
+DOT="${GRAY}·${NC}"
+
+info() { echo -e "  ${CYAN} ${NC} $1"; }
+success() { echo -e "  ${CHECK} $1"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
+error() { echo -e "\n  ${CROSS} ${RED}${BOLD}$1${NC}\n"; exit 1; }
+step() { echo -e "\n  ${BOLD}${WHITE}$1${NC}"; echo -e "  ${GRAY}$(printf '─%.0s' {1..44})${NC}"; }
+
+clear
+echo ""
+echo -e "  ${CYAN}${BOLD}██████╗ ██╗  ${NC}"
+echo -e "  ${CYAN}${BOLD}██╔══██╗██║  ${NC} ${WHITE}${BOLD}Playerok Universal${NC}"
+echo -e "  ${CYAN}${BOLD}██████╔╝██║  ${NC} ${GRAY}Установщик (без systemd)${NC}"
+echo -e "  ${CYAN}${BOLD}██╔═══╝ ██║  ${NC}"
+echo -e "  ${CYAN}${BOLD}██║     ███████╗${NC} ${GRAY}github.com/alleexxeeyy/playerok-universal${NC}"
+echo -e "  ${CYAN}${BOLD}╚═╝     ╚══════╝${NC}"
+echo ""
+echo -e "  ${GRAY}$(printf '═%.0s' {1..48})${NC}"
+echo ""
+
+if [[ $EUID -ne 0 ]]; then
+    error "Запустите скрипт от root: sudo bash install.sh"
+fi
+
+# ── 1. Обновление системы ────────────────────────────────────
+step "Подготовка системы"
+info "Обновление списка пакетов..."
+apt-get update -qq
+success "Система обновлена"
+
+# ── 2. Установка curl/unzip ──────────────────────────────────
+info "Проверка curl и unzip..."
+apt-get install -y curl unzip -qq
+success "curl и unzip готовы"
+
+# ── 3. Источник файлов бота ──────────────────────────────────
+step "Источник установки"
+echo ""
+echo -e "  ${WHITE}Откуда установить бота?${NC}"
+echo ""
+echo -e "  ${CYAN}${BOLD}1${NC} ${WHITE}Скачать с GitHub${NC} ${GRAY}(рекомендуется)${NC}"
+echo -e "  ${CYAN}${BOLD}2${NC} ${WHITE}Использовать файлы с сервера${NC} ${GRAY}(уже загружены вручную)${NC}"
+echo ""
+read -rp "$(echo -e "  ${CYAN}›${NC} Ваш выбор [1/2]: ")" SOURCE_CHOICE
+
+case "$SOURCE_CHOICE" in
+    1)
+        echo ""
+        info "Скачиваю последний релиз с GitHub..."
+        LATEST_URL=$(curl -s "https://api.github.com/repos/alleexxeeyy/playerok-universal/releases/latest" | grep '"zipball_url"' | cut -d'"' -f4)
+        if [[ -z "$LATEST_URL" ]]; then
+            LATEST_URL="https://github.com/alleexxeeyy/playerok-universal/archive/refs/heads/main.zip"
+            info "Релизов нет — скачиваю main ветку..."
+        fi
+        curl -sL "$LATEST_URL" -o /tmp/bot_update.zip
+
+        if [[ -d "/root/playerokuniversal/bot_settings" ]]; then
+            cp -r "/root/playerokuniversal/bot_settings" /tmp/bot_settings_backup
+        fi
+
+        rm -rf /tmp/bot_extract
+        unzip -q /tmp/bot_update.zip -d /tmp/bot_extract
+        EXTRACTED=$(ls /tmp/bot_extract | head -1)
+
+        rm -rf "/root/playerokuniversal"
+        mv "/tmp/bot_extract/$EXTRACTED" "/root/playerokuniversal"
+
+        if [[ -d "/tmp/bot_settings_backup" ]]; then
+            cp -r /tmp/bot_settings_backup "/root/playerokuniversal/bot_settings"
+            rm -rf /tmp/bot_settings_backup
+        fi
+        rm -f /tmp/bot_update.zip
+        success "Бот скачан и установлен в /root/playerokuniversal"
+        ;;
+    2)
+        echo ""
+        read -rp "$(echo -e "  ${CYAN}›${NC} Путь к папке с ботом [${GRAY}$BOT_DIR${NC}]: ")" CUSTOM_DIR
+        CUSTOM_DIR="${CUSTOM_DIR:-$BOT_DIR}"
+        echo ""
+        if [[ ! -d "$CUSTOM_DIR" ]]; then
+            error "Папка не найдена: $CUSTOM_DIR"
+        fi
+        if [[ "$CUSTOM_DIR" != "$BOT_DIR" ]]; then
+            info "Копирую файлы из $CUSTOM_DIR..."
+            cp -r "$CUSTOM_DIR/." "$BOT_DIR"
+            success "Файлы скопированы в $BOT_DIR"
+        else
+            success "Используем файлы из $BOT_DIR"
+        fi
+        ;;
+    *)
+        error "Неверный выбор. Запустите установщик снова."
+        ;;
+esac
+
+if [[ ! -f "$BOT_DIR/$BOT_FILE" ]]; then
+    error "Файл бота не найден: $BOT_DIR/$BOT_FILE"
+fi
+
+# ── 4. Установка Python 3.12 ─────────────────────────────────
+step "Python 3.12"
+info "Проверка Python 3.12..."
+if ! command -v python3.12 &>/dev/null; then
+    info "Устанавливаю Python 3.12..."
+    UBUNTU_VER=$(lsb_release -rs 2>/dev/null | cut -d'.' -f1 || echo "0")
+    if [[ "$UBUNTU_VER" -ge 24 ]]; then
+        apt-get install -y python3.12 python3.12-venv -qq
+    else
+        apt-get install -y software-properties-common -qq
+        add-apt-repository -y ppa:deadsnakes/ppa > /dev/null 2>&1
+        apt-get update -qq
+        apt-get install -y python3.12 python3.12-venv -qq
+    fi
+    success "Python 3.12 установлен"
+else
+    success "Python $(python3.12 --version | cut -d' ' -f2) уже установлен"
+    apt-get install -y python3.12-venv -qq
+fi
+
+# ── 5. Виртуальное окружение ─────────────────────────────────
+step "Виртуальное окружение"
+info "Подготовка окружения..."
+cd "$BOT_DIR"
+if [[ -d "venv" ]]; then
+    if [[ ! -f "venv/bin/pip" ]]; then
+        warn "Окружение повреждено — пересоздаю..."
+        rm -rf venv
+        $PYTHON -m venv venv
+        success "Виртуальное окружение пересоздано"
+    else
+        success "Окружение уже существует — пропускаю"
+    fi
+else
+    $PYTHON -m venv venv
+    success "Виртуальное окружение создано"
+fi
+
+# ── 6. Зависимости ───────────────────────────────────────────
+step "Зависимости"
+if [[ -f "$BOT_DIR/requirements.txt" ]]; then
+    info "Устанавливаю пакеты из requirements.txt..."
+    sed -i '/^-i /d; /^--index-url/d; /^--extra-index-url/d; / -i http/d' "$BOT_DIR/requirements.txt"
+    "$BOT_DIR/venv/bin/pip" install --upgrade pip -q -i https://pypi.org/simple
+    "$BOT_DIR/venv/bin/pip" install -r "$BOT_DIR/requirements.txt" -q -i https://pypi.org/simple
+    success "Все зависимости установлены"
+else
+    warn "requirements.txt не найден — пропускаю"
+fi
+
+# ── 7. Wrapper-скрипт ────────────────────────────────────────
+step "Настройка запуска"
+info "Создаю wrapper-скрипт..."
+cat > "${BOT_DIR}/run.sh" << 'WRAPPER'
+#!/bin/bash
+export PYTHONUNBUFFERED=1
+export TERM=xterm-256color
+cd /root/playerokuniversal
+exec /root/playerokuniversal/venv/bin/python - << 'PYEOF'
+import colorama.ansitowin32 as _a32
+class _FakeWinTerm:
+    def set_title(self, t): pass
+    def set_cursor_position(self, *a, **k): pass
+    def set_foreground(self, *a, **k): pass
+    def set_background(self, *a, **k): pass
+    def reset_all(self, *a, **k): pass
+    def style(self, *a, **k): pass
+_a32.winterm = _FakeWinTerm()
+import colorama
+colorama.init()
+import runpy, sys
+sys.argv = ['/root/playerokuniversal/bot.py']
+runpy.run_path('/root/playerokuniversal/bot.py', run_name='__main__')
+PYEOF
+WRAPPER
+chmod +x "${BOT_DIR}/run.sh"
+success "Wrapper-скрипт создан"
+
+# ── 8. Команда pluniversal ───────────────────────────────────
+info "Устанавливаю команду '${CMD}'..."
+cat > /usr/local/bin/$CMD << 'BOTCMD'
+#!/bin/bash
+BOT_DIR="/root/playerokuniversal"
+CONFIG="$BOT_DIR/bot_settings/config.json"
+PID_FILE="$BOT_DIR/bot.pid"
+LOG_FILE="$BOT_DIR/bot.log"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+is_configured() {
+    [[ -f "$CONFIG" ]] || return 1
+    cookies=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['playerok']['api']['cookies'])" 2>/dev/null)
+    token=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['telegram']['api']['token'])" 2>/dev/null)
+    password=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['telegram']['bot']['password'])" 2>/dev/null)
+    [[ -n "$cookies" && -n "$token" && -n "$password" ]]
+}
+
+is_running() {
+    if [[ -f "$PID_FILE" ]]; then
+        PID=$(cat "$PID_FILE" 2>/dev/null)
+        if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+start_bot() {
+    if ! is_configured; then
+        echo ""
+        echo -e "  ${YELLOW}⚠ Бот не настроен!${NC}"
+        echo -e "  ${GRAY}Запустите настройку:${NC} ${CYAN}pluniversal setup${NC}"
+        echo ""
+        exit 1
+    fi
+
+    if is_running; then
+        echo ""
+        echo -e "  ${YELLOW}⚠ Бот уже запущен! (PID: $(cat "$PID_FILE"))${NC}"
+        echo ""
+        exit 0
+    fi
+
+    echo ""
+    echo -e "  ${CYAN} ›${NC} Запускаю бота..."
+    
+    cd "$BOT_DIR"
+    nohup "${BOT_DIR}/run.sh" >> "${LOG_FILE}" 2>&1 &
+    PID=$!
+    echo "$PID" > "$PID_FILE"
+    
+    sleep 1
+    if is_running; then
+        echo -e "  ${GREEN}✔${NC} Бот запущен (PID: $PID)"
+        echo -e "  ${GRAY}Логи:${NC} pluniversal log"
+        echo ""
+    else
+        echo -e "  ${RED}✘${NC} Не удалось запустить бота. Проверьте логи: pluniversal log"
+        echo ""
+        exit 1
+    fi
+}
+
+stop_bot() {
+    echo ""
+    if is_running; then
+        PID=$(cat "$PID_FILE" 2>/dev/null)
+        kill "$PID" 2>/dev/null || true
+        
+        # Ждём завершения до 5 секунд
+        for i in {1..5}; do
+            if ! kill -0 "$PID" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Принудительно убиваем если всё ещё запущен
+        if kill -0 "$PID" 2>/dev/null; then
+            kill -9 "$PID" 2>/dev/null || true
+        fi
+
+        rm -f "$PID_FILE"
+        echo -e "  ${RED}■${NC} Бот остановлен"
+    else
+        rm -f "$PID_FILE" 2>/dev/null
+        echo -e "  ${YELLOW}⚠${NC} Бот уже остановлен"
+    fi
+    echo ""
+}
+
+case "$1" in
+    start)
+        start_bot
+        ;;
+    stop)
+        stop_bot
+        ;;
+    restart)
+        stop_bot
+        start_bot
+        ;;
+    status)
+        echo ""
+        if is_running; then
+            PID=$(cat "$PID_FILE")
+            STATUS_ICON="${GREEN}●${NC}"
+            STATUS_TEXT="${GREEN}${BOLD}запущен${NC} (PID: $PID)"
+        else
+            STATUS_ICON="${RED}●${NC}"
+            STATUS_TEXT="${RED}${BOLD}остановлен${NC}"
+        fi
+
+        echo -e "  ${STATUS_ICON} Playerok Universal — ${STATUS_TEXT}"
+        echo ""
+
+        if is_configured; then
+            echo -e "  ${GRAY}Конфиг:${NC} ${GREEN}заполнен${NC}"
+        else
+            echo -e "  ${GRAY}Конфиг:${NC} ${YELLOW}не заполнен${NC} › pluniversal setup"
+        fi
+        if [[ -f "$LOG_FILE" ]]; then
+            LOG_SIZE=$(du -h "$LOG_FILE" | cut -f1)
+            echo -e "  ${GRAY}Размер лога:${NC} $LOG_SIZE"
+        fi
+        echo ""
+        ;;
+    log | logs)
+        echo ""
+        echo -e "  ${GRAY}Playerok Universal — живые логи ${NC}${CYAN}(Ctrl+C для выхода)${NC}"
+        echo -e "  ${GRAY}$(printf '─%.0s' {1..44})${NC}"
+        echo ""
+        if [[ -f "$LOG_FILE" ]]; then
+            tail -f "$LOG_FILE"
+        else
+            echo -e "  ${YELLOW}Лог-файл ещё не создан.${NC}"
+        fi
+        ;;
+    log100)
+        echo ""
+        echo -e "  ${GRAY}Playerok Universal — последние 100 строк${NC}"
+        echo -e "  ${GRAY}$(printf '─%.0s' {1..44})${NC}"
+        echo ""
+        if [[ -f "$LOG_FILE" ]]; then
+            tail -n 100 "$LOG_FILE"
+        else
+            echo -e "  ${YELLOW}Лог-файл ещё не создан.${NC}"
+        fi
+        ;;
+    setup)
+        echo ""
+        echo -e "  ${CYAN}${BOLD}Первоначальная настройка Playerok Universal${NC}"
+        echo -e "  ${GRAY}$(printf '─%.0s' {1..44})${NC}"
+        echo ""
+        stop_bot > /dev/null 2>&1 || true
+        cd "$BOT_DIR"
+        export TERM=xterm-256color
+        /root/playerokuniversal/venv/bin/python -c "
+import colorama.ansitowin32 as _a32
+class _FakeWinTerm:
+    def set_title(self, t): pass
+    def set_cursor_position(self, *a, **k): pass
+    def set_foreground(self, *a, **k): pass
+    def set_background(self, *a, **k): pass
+    def reset_all(self, *a, **k): pass
+    def style(self, *a, **k): pass
+_a32.winterm = _FakeWinTerm()
+import colorama; colorama.init()
+import sys; sys.path.insert(0, '/root/playerokuniversal')
+from utils import configure_config
+configure_config()
+"
+        echo ""
+        echo -e "  ${GREEN}✔${NC} Настройка завершена — запускаю бота..."
+        start_bot
+        ;;
+    update)
+        echo ""
+        echo -e "  ${CYAN}⬇${NC} Скачиваю последний релиз с GitHub..."
+        stop_bot > /dev/null 2>&1 || true
+        LATEST_URL=$(curl -s "https://api.github.com/repos/alleexxeeyy/playerok-universal/releases/latest" | grep '"zipball_url"' | cut -d'"' -f4)
+        if [[ -z "$LATEST_URL" ]]; then
+            LATEST_URL="https://github.com/alleexxeeyy/playerok-universal/archive/refs/heads/main.zip"
+        fi
+        curl -sL "$LATEST_URL" -o /tmp/bot_update.zip
+
+        if [[ -d "/root/playerokuniversal/bot_settings" ]]; then
+            cp -r "/root/playerokuniversal/bot_settings" /tmp/bot_settings_backup
+        fi
+
+        rm -rf /tmp/bot_extract
+        unzip -q /tmp/bot_update.zip -d /tmp/bot_extract
+        EXTRACTED=$(ls /tmp/bot_extract | head -1)
+
+        rm -rf "/root/playerokuniversal"
+        mv "/tmp/bot_extract/$EXTRACTED" "/root/playerokuniversal"
+
+        if [[ -d "/tmp/bot_settings_backup" ]]; then
+            cp -r /tmp/bot_settings_backup "/root/playerokuniversal/bot_settings"
+            rm -rf /tmp/bot_settings_backup
+        fi
+        rm -f /tmp/bot_update.zip
+
+        echo -e "  ${CYAN}◈${NC} Обновляю зависимости..."
+        /root/playerokuniversal/venv/bin/pip install -r /root/playerokuniversal/requirements.txt -q
+        start_bot
+        ;;
+    enable)
+        (crontab -l 2>/dev/null | grep -v "pluniversal start"; echo "@reboot /usr/local/bin/pluniversal start") | crontab -
+        echo ""
+        echo -e "  ${GREEN}✔${NC} Автозапуск через crontab включён"
+        echo ""
+        ;;
+    disable)
+        (crontab -l 2>/dev/null | grep -v "pluniversal start") | crontab -
+        echo ""
+        echo -e "  ${YELLOW}■${NC} Автозапуск отключён"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo -e "  ${CYAN}${BOLD}Playerok Universal${NC} ${GRAY}управление ботом (без systemd)${NC}"
+        echo -e "  ${GRAY}$(printf '─%.0s' {1..44})${NC}"
+        echo ""
+        echo -e "  ${CYAN}pluniversal setup${NC}   ${GRAY}→${NC} первоначальная настройка"
+        echo -e "  ${CYAN}pluniversal start${NC}   ${GRAY}→${NC} запустить бота"
+        echo -e "  ${CYAN}pluniversal stop${NC}    ${GRAY}→${NC} остановить бота"
+        echo -e "  ${CYAN}pluniversal restart${NC} ${GRAY}→${NC} перезапустить бота"
+        echo -e "  ${CYAN}pluniversal status${NC}  ${GRAY}→${NC} статус и информация"
+        echo -e "  ${CYAN}pluniversal log${NC}     ${GRAY}→${NC} живые логи ${GRAY}(Ctrl+C для выхода)${NC}"
+        echo -e "  ${CYAN}pluniversal log100${NC}  ${GRAY}→${NC} последние 100 строк"
+        echo -e "  ${CYAN}pluniversal update${NC}  ${GRAY}→${NC} обновить с GitHub"
+        echo -e "  ${CYAN}pluniversal enable${NC}  ${GRAY}→${NC} включить автозапуск (crontab @reboot)"
+        echo -e "  ${CYAN}pluniversal disable${NC} ${GRAY}→${NC} выключить автозапуск"
+        echo ""
+        ;;
+esac
+BOTCMD
+chmod +x /usr/local/bin/$CMD
+success "Команда '${CMD}' установлена"
+
+# ── 9. Запуск ────────────────────────────────────────────────
+CONFIG_FILE="$BOT_DIR/bot_settings/config.json"
+CONFIGURED=false
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    COOKIES=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['playerok']['api']['cookies'])" 2>/dev/null || echo "")
+    TOKEN=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['telegram']['api']['token'])" 2>/dev/null || echo "")
+    PASSWORD=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['telegram']['bot']['password'])" 2>/dev/null || echo "")
+    if [[ -n "$COOKIES" && -n "$TOKEN" && -n "$PASSWORD" ]]; then
+        CONFIGURED=true
+    fi
+fi
+
+if [[ "$CONFIGURED" == "true" ]]; then
+    info "Конфиг заполнен — запускаю бота..."
+    /usr/local/bin/$CMD start
+fi
+
+# ── Итог ─────────────────────────────────────────────────────
+echo ""
+echo ""
+echo -e "  ${GRAY}$(printf '═%.0s' {1..48})${NC}"
+echo ""
+echo -e "  ${GREEN}${BOLD}Установка завершена успешно!${NC}"
+echo ""
+if [[ "$CONFIGURED" == "false" ]]; then
+    echo -e "  ${YELLOW}⚠${NC} Конфиг не заполнен — запустите настройку:"
+    echo ""
+    echo -e "  ${CYAN}${BOLD}pluniversal setup${NC}"
+    echo ""
+else
+    echo -e "  ${GREEN}✔${NC} Бот работает в фоне"
+    echo ""
+    echo -e "  ${CYAN}pluniversal log${NC} — посмотреть логи"
+    echo -e "  ${CYAN}pluniversal status${NC} — статус бота"
+    echo ""
+fi
+echo -e "  ${GRAY}Все команды:${NC} pluniversal"
+echo -e "  ${GRAY}$(printf '═%.0s' {1..48})${NC}"
+echo ""
+
